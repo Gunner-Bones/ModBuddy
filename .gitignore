@@ -1,0 +1,7 @@
+
+config.json
+config.json
+*.json
+*.sqlite
+*.json
+*.pyc
