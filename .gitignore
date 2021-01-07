@@ -5,3 +5,5 @@ config.json
 *.sqlite
 *.json
 *.pyc
+config.json
+*.json

@@ -10,7 +10,7 @@ client = gd.Client()
 
 class MMLevel:
 
-	def __init__(self, lID: int, lName="", lAuthor="", lDifficulty=0, lDemon=0, lLength=-2, lRqS=-1, lIsRated=False):
+	def __init__(self, lID: int, lName="", lAuthor="", lDifficulty=0, lDemon=0, lLength=-2, lRqS=-1, lIsRated=False, lastRequest=0, timesSent=0, timesRequested=1):
 		""" Object for Levels in-game."""
 		self.id = lID
 		self.name = lName
@@ -20,6 +20,14 @@ class MMLevel:
 		self.length = lLength
 		self.rqs = lRqS
 		self.isRated = lIsRated
+		self.lastrq = lastRequest
+		self.timesrq = timesRequested
+		self.timessent = timesSent
+
+	def isUngenerated(self) -> bool:
+		""" Checks if level is missing in-game attributes. """
+		# RETURNS: bool
+		return not self.name or not self.author or not self.lastrq
 
 	async def generate(self):
 		""" Fill all empty 'l' attributes from ID. """
@@ -80,7 +88,14 @@ class MMServerSettings:
 		self.allowedRoles = allowedRoles
 		self.requestCooldown = requestCooldown
 
-	def canRequest(self, ctx: commands.Context, rq: MMRequestUser):
+	def onCooldown(self, rq: MMRequestUser) -> int:
+		""" Checks if the Requesting User is still on Cooldown. If so, returns remaining time. """
+		# RETURNS: int (UNIX delta)
+		if int(time.time()) >= rq.rqLast + self.requestCooldown:
+			return 0
+		return (rq.rqLast + self.requestCooldown) - int(time.time())
+
+	def canRequest(self, ctx: commands.Context, rq: MMRequestUser) -> int:
 		""" Checks if the Requesting User can request a new level in this Server. """
 		# RETURNS: int (0=User can request, 1=User is banned, 2=Requests are not turned on,
 		# 3=User is not in an allowed Channel, 4=User does not have an allowed Role,
@@ -95,7 +110,7 @@ class MMServerSettings:
 		if self.allowedRoles:
 			if not any(allowed in [role.id for role in ctx.author.roles] for allowed in self.allowedRoles):
 				return 4
-		if int(time.time()) < rq.rqLast + self.requestCooldown:
+		if onCooldown(rq=rq):
 			return 5
 		return 0
 
@@ -106,11 +121,14 @@ class LevelDatabase:
 		self.db = sqlite3.connect(dbPath, isolation_level=None)
 		self.db.execute("PRAGMA foreign_keys = 1")
 
-	def query_single_result(self, query, parameters):
+	def query_single_result(self, query, parameters=""):
 		""" Execute a query for a single result. """
 		# Author: MultipleMonomials
 
-		cursor = self.db.execute(query, parameters)
+		if parameters:
+			cursor = self.db.execute(query, parameters)
+		else:
+			cursor = self.db.execute(query)
 		row = cursor.fetchone()
 
 		if row is None or len(row) < 1:
@@ -120,11 +138,14 @@ class LevelDatabase:
 		cursor.close()
 		return result
 
-	def query_multiple_results(self, query, parameters) -> tuple:
+	def query_multiple_results(self, query, parameters="") -> tuple:
 		""" Execute a query for multiple results. """
-		cursor = self.db.execute(query, parameters)
+		if parameters:
+			cursor = self.db.execute(query, parameters)
+		else:
+			cursor = self.db.execute(query)
 		result = cursor.fetchall()
-		if row is None or len(row) < 1:
+		if result is None or len(result) < 1:
 			return None
 		cursor.close()
 		return result
@@ -144,6 +165,7 @@ class LevelDatabase:
 			in-game level attributes.
 			-isSent INTEGER: Number of times sent.
 			-timesRequested INTEGER: Number of times requested.
+			-rTime INTEGER (UNIX timestamp): Latest time requested.
 			*/
 			lID INTEGER PRIMARY KEY, 
 			lName TEXT, 
@@ -154,7 +176,8 @@ class LevelDatabase:
 			lRqS INTEGER, 
 			lIsRated INTEGER, 
 			isSent INTEGER ,
-			timesRequested INTEGER
+			timesRequested INTEGER,
+			rTime INTEGER
 			)
 			""")
 		self.db.execute(
@@ -237,6 +260,23 @@ class LevelDatabase:
 			mmu = MMUser(uID=user['uID'], dID=user['dID'], uName=user['uName'], uIsMod=user['uIsMod'])
 			self.add_user(mmu)
 		print('[db] cep.py: PRELOADED Users')
+		for level in DBPRELOAD_Levels:
+			mml = MMLevel(lID=level['lID'], lName=level['lName'])
+			self.add_level(mml)
+		print('[db] cep.py: PRELOADED Levels')
+
+	async def preload_tables(self):
+		""" Awaits all objects not generated and generates them. """
+
+		# Levels
+		all_levels = self.get_all_levels()
+		for level in all_levels:
+			if level.isUngenerated():
+				await level.generate()
+				self.remove_level(level.id)
+				self.add_level(level)
+
+		print('[db] Generated tables.')
 
 	# LEVELS
 	def add_level(self, mml: MMLevel) -> bool:
@@ -245,19 +285,19 @@ class LevelDatabase:
 		try:
 			self.db.execute(
 				"""
-				INSERT INTO Levels(lID, lName, lAuthor, lDifficulty, lDemon, lLength, lRqS, lIsRated, isSent, timesRequested)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO Levels(lID, lName, lAuthor, lDifficulty, lDemon, lLength, lRqS, lIsRated, isSent, timesRequested, rTime)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				""", 
-				(mml.id, mml.name, mml.author, mml.difficulty, mml.demon, mml.length, mml.rqs, int(mml.isRated), 0, 1))
+				(mml.id, mml.name, mml.author, mml.difficulty, mml.demon, mml.length, mml.rqs, int(mml.isRated), 0, 1, int(time.time())))
 			return True
 		except sqlite3.IntegrityError:
 			self.db.execute(
 				"""
 				UPDATE Levels 
-				SET timesRequested = timesRequested + 1
+				SET timesRequested = timesRequested + 1, rTime = ?
 				WHERE lID = ? 
 				""",
-				(mml.lID,))
+				(int(time.time()), mml.lID,))
 			return False
 
 	def remove_level(self, lid: int):
@@ -272,20 +312,42 @@ class LevelDatabase:
 	def get_level(self, lid: int) -> MMLevel:
 		""" Returns MMLevel object from Levels table. """
 		# RETURNS: MMLevel
-		t = self.query_single_result("SELECT * FROM Levels WHERE lID = ?", (lid,)) 
+		t = self.query_multiple_results(
+			"""
+			SELECT Levels.lID, Levels.lName, Levels.lAuthor, Levels.lDifficulty, Levels.lDemon,
+			Levels.lLength, Levels.lRqS, Levels.lIsRated, Levels.rTime, Levels.timesRequested, Levels.isSent
+			FROM Levels
+			WHERE Levels.lID = ?
+			"""
+			,(lid,))
+		t = t[0]
 		if not t:
 			return None
 		return MMLevel(lID=t[0], lName=t[1], lAuthor=t[2], lDifficulty=t[3], 
-			lDemon=t[4], lLength=t[5], lRqS=t[6], lIsRated=bool(t[7]))
+			lDemon=t[4], lLength=t[5], lRqS=t[6], lIsRated=bool(t[7]), timesSent=t[8], lastRequest=t[10], timesRequested=t[9])
 
 	async def new_level(self, lid: int) -> MMLevel:
 		""" Searches for level in-game with given ID and adds to Levels table. """
 		# RETURNS: MMLevel
-		mml = MMLevel(lID=lid)
+		mml = MMLevel(lID=lid, lastRequest=int(time.time()))
 		await mml.generate()
 		if self.add_level(mml):
 			return mml
 		return None
+
+	def get_all_levels(self) -> list:
+		""" Returns all levels from the Levels table as MMLevel objects. """
+		# RETURNS: list<MMLevel>
+		leveldata = self.query_multiple_results(
+			"""
+			SELECT Levels.lID, Levels.lName, Levels.lAuthor, Levels.lDifficulty, Levels.lDemon,
+			Levels.lLength, Levels.lRqS, Levels.lIsRated, Levels.rTime, Levels.timesRequested, Levels.isSent
+			FROM Levels
+			"""
+			)
+		return [MMLevel(lID=r[0], lName=r[1], lAuthor=r[2], lDifficulty=r[3], 
+			lDemon=r[4], lLength=r[5], lRqS=r[6], lIsRated=r[7], lastRequest=r[8], 
+			timesRequested=r[9], timesSent=r[10]) for r in leveldata]
 
 	# USERS
 	def add_user(self, mmu: MMUser) -> bool:
@@ -373,14 +435,15 @@ class LevelDatabase:
 		leveldata = list(self.query_multiple_results(
 			"""
 			SELECT Levels.lID, Levels.lName, Levels.lAuthor, Levels.lDifficulty, Levels.lDemon, 
-			Levels.lLength, Levels.lRqS, Levels.lIsRated
+			Levels.lLength, Levels.lRqS, Levels.lIsRated, Levels.rTime, Levels.timesRequested, Levels.isSent
 			FROM SendHistory
 			INNER JOIN Levels ON Levels.lID = SendHistory.flID
 			WHERE SendHistory.fuID = ?
 			"""
 			), (kID))
 		return [MMLevel(lID=r[0], lName=r[1], lAuthor=r[2], lDifficulty=r[3], 
-			lDemon=t[4], lLength=r[5], lRqS=r[6], lIsRated=r[7]) for r in leveldata]
+			lDemon=t[4], lLength=r[5], lRqS=r[6], lIsRated=r[7], lastRequest=r[8], 
+			timesRequested=t[9], timesSent=t[10]) for r in leveldata]
 
 	def get_sends_level(self, flid: int):
 		""" Finds users who've sent this level. """
@@ -493,17 +556,27 @@ class LevelDatabase:
 	def new_server(self, stid: int, stname: str, 
 		requests: bool, allowedChannels: list, allowedRoles: list, requestCooldown: int) -> bool:
 		""" Generates new MMServerSettings object and adds it to ServerSettings table. """
-		# RETURNS: bool (Server Settings added successfully)
+		# RETURNS: MMServerSettings
 		mmss = MMServerSettings(stID=stid, stName=stname, requests=requests, 
 			allowedChannels=allowedChannels, allowedRoles=allowedRoles, requestCooldown=requestCooldown)
-		return self.add_server(mmss)
+		if self.add_server(mmss):
+			return mmss
+		return None
 
-	def get_server(self, stid: int) -> MMServerSettings:
+	def generate_default_server(self, stid: int, stname: str) -> MMServerSettings:
+		""" Generate a MMServerSettings with default values if none exist. """
+		# RETURNS: MMServerSettings
+		dft = DBDEFAULT_ServerSettings
+		return self.new_server(stid=stid, stname=stname,
+			requests=dft['requests'], allowedChannels=dft['allowedChannels'],
+			allowedRoles=dft['allowedRoles'], requestCooldown=dft['requestCooldown'])
+
+	def get_server(self, stid: int, stname="") -> MMServerSettings:
 		""" Returns the Server Settings from a given Discord Server ID. """
 		# RETURNS: MMServerSettings
 		t = self.query_single_result("SELECT * FROM ServerSettings WHERE stID = ?", (stid,))
 		if not t:
-			return None
+			return self.generate_default_server(stid=stid, stname=stname)
 		return MMServerSettings(stID=t[0], stName=t[1], requests=bool(t[2]), 
 			allowedChannels=StrToListInts(t[3]), allowedRoles=StrToListInts(t[4]), requestCooldown=t[5])
 

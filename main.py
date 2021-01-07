@@ -20,7 +20,6 @@ client.remove_command("help")
 secret = j_value(F_CONFIG, 'secret')
 
 gdclient = gd.Client()
-
 database = None
 
 # BACKEND
@@ -34,12 +33,9 @@ def loadDatabase():
 		database = LevelDatabase(F_SQL)
 		database.create_tables()
 
-	dft = DBDEFAULT_ServerSettings
 	count = 0
 	for guild in client.guilds:
-		if database.new_server(stid=guild.id, stname=guild.name,
-			requests=dft['requests'], allowedChannels=dft['allowedChannels'],
-			allowedRoles=dft['allowedRoles'], requestCooldown=dft['requestCooldown']):
+		if database.generate_default_server(stid=guild.id, stname=guild.name):
 			count += 1
 			print("[db] cep.py: New Server found: " + guild.name)
 	if count:
@@ -76,6 +72,7 @@ async def on_ready():
 				print('[ERROR] Database could not be accessed. (Is someone modifying it?)')
 				time.sleep(5)
 				sys.exit()
+	await database.preload_tables()
 
 @client.command(pass_context=True)
 async def linkmod(ctx, linkdid, linkuid):
@@ -108,10 +105,54 @@ async def linkmod(ctx, linkdid, linkuid):
 	else:
 		await response(ctx=ctx, react="FAILED", static="PERM")
 
+
 @client.command(pass_context=True)
 async def request(ctx, reqlid):
 	""" Requests a Level. """
 	# SCOPE: Anyone
+	if reqlid.isdigit():
+		requester = database.get_requester(rdid=ctx.author.id, rname=ctx.author.name)
+		server_settings = database.get_server(stid=ctx.guild.id, stname=ctx.guild.name)
+		crq = server_settings.canRequest(ctx=ctx, rq=requester)
+		request_cases = {
+			1: "You are banned from requesting!",
+			2: "Requests are disabled for this Server!",
+			3: "You are not allowed to request in this Channel.",
+			4: "You do not have the required Role(s) to request.",
+			5: "Woah, slow down! You can request again in "
+		}
+		if not crq:
+			level = database.new_level(lid=reqlid)
+			if level:
+				await response(ctx=ctx, react='SUCCESS', dynamic="Level REQUESTED!")
+				await ctx.send(embed=embedLevel(level))
+			else:
+				await response(ctx=ctx, react='FAILED', dynamic="No GD Level found with ID `" + str(reqlid) + "`") 
+		else:
+			extra = ""
+			if crq == 5:
+				extra = str(server_settings.onCooldown(rq=requester)) + " seconds."
+			await response(ctx=ctx, react='FAILED', dynamic=request_cases[crq] + extra)
+	else:
+		await response(ctx=ctx, react='FAILED', dynamic="`Level ID` parameter must be an ID!")
+
+
+@client.command(pass_context=True)
+async def check_requests_new(ctx):
+	""" Checks requested levels by recently-added. """
+	# SCOPE: DB Admin, GD Moderators
+	if await pLink(ctx=ctx, database=database):
+		all_levels = database.get_all_levels()
+		choice = await paginate(client=client, ctx=ctx, 
+			inp=all_levels, t='level', dsc=False, sb='recent')
+		if choice:
+			level = database.get_level(lid=choice)
+			if level:
+				await ctx.send(embed=embedLevel(level))
+			else:
+				await response(ctx=ctx, react='FAILED', dynamic="No GD Level found with ID `" + str(reqlid) + "`") 
+	else:
+		await response(ctx=ctx, react='FAILED', static='PERM')
 
 
 @client.command(pass_context=True)
@@ -126,6 +167,11 @@ async def debug_request(ctx, reqlid):
 			await ctx.send(embed=embedLevel(level))
 		else:
 			await response(ctx=ctx, react="FAILED", dynamic="Could not add level.")
+
+@client.command(pass_context=True)
+async def debug_test(ctx):
+	if pDBAdmin(ctx.author.id):
+		await ctx.send(":one:")
 
 try:
 	client.run(secret)

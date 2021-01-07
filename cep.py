@@ -1,5 +1,7 @@
 import gd
 import discord
+import datetime
+import asyncio
 from discord.ext import commands
 from db import *
 
@@ -8,6 +10,14 @@ gdclient = gd.Client()
 # CONSTANTS
 CHAR_SUCCESS = "✅"
 CHAR_FAILED = "❌"
+CHAR_BACK = "◀️"
+CHAR_FORWARD = "▶️"
+CHAR_STOP = "⏹️"
+CHAR_ONE = "1️⃣"
+CHAR_TWO = "2️⃣"
+CHAR_THREE = "3️⃣"
+CHAR_FOUR = "4️⃣"
+CHAR_FIVE = "5️⃣"
 
 EMOTE_RATING_NA ="<:na:795811083641946154>"
 EMOTE_RATING_AUTO = "<:auto:795811083360665661>"
@@ -65,6 +75,60 @@ DBPRELOAD_Users = [
 	'uIsMod': 1
 	}
 	]
+DBPRELOAD_Levels = [ # first dozen random magic levels I found lol
+	{
+	'lID': 66280253,
+	'lName': "Back on Past"
+	},
+	{
+	'lID': 66279859,
+	'lName': "Place On Fire"
+	},
+	{
+	'lID': 66278041,
+	'lName': "PURITY"
+	},
+	{
+	'lID': 66276680,
+	'lName': "Insurrection"
+	},
+	{
+	'lID': 66274814,
+	'lName': "Downward Dog"
+	},
+	{
+	'lID': 66273244,
+	'lName': "Magic Bounce"
+	},
+	{
+	'lID': 66273220,
+	'lName': "Electricity"
+	},
+	{
+	'lID': 66271329,
+	'lName': "Multiplayer mode II"
+	},
+	{
+	'lID': 66268977,
+	'lName': "Ferfette"
+	},
+	{
+	'lID': 66267175,
+	'lName': "Skull"
+	},
+	{
+	'lID': 66265322,
+	'lName': "Q"
+	},
+	{
+	'lID': 66259721,
+	'lName': "MECHANICAL FORCE"
+	},
+	{
+	'lID': 66257000,
+	'lName': "Eli IV"
+	}
+]
 
 DBDEFAULT_ServerSettings = {
 	'requests': True,
@@ -80,6 +144,45 @@ def StrToListInts(data: str) -> list:
 	if data.replace(" ","") == "[]":
 		return []
 	return [int(entry) for entry in data.replace("[","").replace("]","").replace(" ","").split(",")]
+
+def UNIXToDatetime(unx: int) -> datetime.datetime:
+	""" Converts a UNIX timestamp int to a datetime.datetime object. """
+	# RETURNS: datetime.datetime
+	return datetime.datetime.fromtimestamp(unx)
+
+def DatetimeToRelative(dt: datetime.datetime) -> str:
+	""" Formats a datetime.datetime object to relative time. """
+	# RETURNS: str
+	# I'd like to give a standing ovation to the makers of the datetime
+	# library for having timedelta only include seconds and days :D
+	now = datetime.datetime.now()
+	dlt = now - dt
+	s = "s ago"
+	if dlt.seconds < 60:
+		if dlt.seconds == 1:
+			s = " ago"
+		return str(dlt.seconds) + " second" + s
+	if dlt.seconds < 3600:
+		if 120 > dlt.seconds >= 60:
+			s = " ago"
+		return str(int(dlt.seconds / 60)) + " minute" + s
+	if dlt.days == 0:
+		if 7200 > dlt.seconds >= 3600:
+			s = " ago"
+		return str(int(dlt.seconds / 3600)) + " hour" + s
+	if dlt.days == 1:
+		return "Yesterday"
+	if dlt.days < 7:
+		if dlt.days == 1:
+			s = " ago"
+		return str(dlt.days) + " day" + s
+	if 14 > dlt.days >= 7:
+		return "Last week"
+	if dlt.days < 30:
+		return str(int(dlt.days / 7)) + " weeks ago"
+	if 60 > dlt.days >= 30:
+		return "Last month"
+	return "Months ago"
 
 def eGDDifficulty(diff: int, dmn=0) -> str:
 	""" Enumeration for GD API Level Difficulty. """
@@ -196,6 +299,39 @@ def eRatingsToEmote(inp: str) -> str:
 		return None
 	return atr[inp]
 
+def eNumberToEmote(inp: int) -> str:
+	""" Enumeration for Number emotes. """
+	# RETURNS: str (Emote)
+	atr = {
+		1: CHAR_ONE,
+		2: CHAR_TWO,
+		3: CHAR_THREE,
+		4: CHAR_FOUR,
+		5: CHAR_FIVE
+	}
+	if inp not in atr.keys():
+		return None
+	return atr[inp]
+
+def eEmoteToNumber(inp: str) -> int:
+	""" Enumeration for Numbers from Emotes. """
+	# RETURNS: int
+	atr = {
+		CHAR_ONE: 1,
+		CHAR_TWO: 2,
+		CHAR_THREE: 3,
+		CHAR_FOUR: 4,
+		CHAR_FIVE: 5
+	}
+	if inp not in atr.keys():
+		return None
+	return atr[inp]
+
+async def discordRemoveAllReactions(message):
+	""" Removes all Reactions on a Message. """
+	for reaction in message.reactions:
+		await reaction.clear()
+
 async def response(ctx: commands.Context, react: str, static="", dynamic=""):
 	""" Discord Bot responses. """
 	r = {
@@ -208,6 +344,89 @@ async def response(ctx: commands.Context, react: str, static="", dynamic=""):
 	}
 	await ctx.channel.send("**" + ctx.author.name + "**, " + (dynamic or s[static]))
 	await ctx.message.add_reaction(r[react])
+
+async def paginate(client, ctx: commands.Context, inp: list, t: str, dsc: bool, sb: str):
+	""" Discord Bot list of paginatable objects. Limit 5 objects per page. """
+	# RETURNS: int (Specific to Embed context)
+	fields = formatEmbedsForPagination(inp=inp, t=t, sb=sb)
+	fields = sorted(fields, key = lambda k: k['sort'], reverse=dsc)
+	embeds = []
+	temp_embed = discord.Embed(title="Results")
+	temp_objs = []
+	page = 1
+	counter = 1
+	for obj in fields:
+		if counter == 6 or fields.index(obj) == len(fields) - 1:
+			pagembed = {
+				'embed': temp_embed,
+				'page': page,
+				'items': counter - 1,
+				'objs': temp_objs
+			}
+			embeds.append(pagembed)
+			if fields.index(obj) == len(fields) - 1:
+				break
+			temp_embed = discord.Embed(title="Results")
+			temp_objs = []
+			counter = 1
+			page += 1
+		else:
+			num_emote = eNumberToEmote(counter)
+			temp_embed.add_field(name=num_emote + obj['name'], value=obj['value'], inline=False)
+			temp_objs.append(obj['obj'])
+			counter += 1
+	for embed in embeds:
+		embed['embed'].set_footer(text="Page " + str(embed['page']) + " of " + str(page))
+	embeds = sorted(embeds, key = lambda e: e['page'])
+
+	choice = 0
+	allowed = [
+		CHAR_ONE,
+		CHAR_TWO,
+		CHAR_THREE,
+		CHAR_FOUR,
+		CHAR_FIVE,
+		CHAR_STOP,
+		CHAR_FORWARD,
+		CHAR_BACK
+	]
+	current_page = 0
+	def check(reaction, user):
+		return user.id == ctx.author.id and str(reaction.emoji) in allowed
+	message = await ctx.send(embed=embeds[current_page]['embed'])
+	while True:
+		for num in range(1, embeds[current_page]['items'] + 1):
+			await message.add_reaction(eNumberToEmote(num))
+		if current_page > 0:
+			await message.add_reaction(CHAR_BACK)
+		if current_page < len(embeds) - 1:
+			await message.add_reaction(CHAR_FORWARD)
+		await message.add_reaction(CHAR_STOP)
+		try:
+			reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
+		except asyncio.TimeoutError:
+			await message.clear_reactions()
+			break
+		else:
+			await message.clear_reactions()
+			resp = str(reaction.emoji)
+			if resp == CHAR_STOP:
+				break
+			if resp == CHAR_FORWARD or resp == CHAR_BACK:
+				if resp == CHAR_FORWARD:
+					current_page += 1
+				elif resp == CHAR_BACK:
+					current_page -= 1
+				await message.edit(embed=embeds[current_page]['embed'])
+				continue
+			if resp in [CHAR_ONE, CHAR_TWO, CHAR_THREE, CHAR_FOUR, CHAR_FIVE]:
+				resp_num = eEmoteToNumber(resp)
+				if resp_num > embeds[current_page]['items']:
+					continue
+				choice = embeds[current_page]['objs'][resp_num - 1].id
+				break
+	return choice
+
 
 def embedLevel(level) -> discord.Embed:
 	""" Converts a MMLevel into a Discord Embed. """
@@ -228,6 +447,34 @@ def embedLevel(level) -> discord.Embed:
 	embed.add_field(name="Length", value=eGDLength(level.length).capitalize(), inline=True)
 	embed.add_field(name="Requested Stars", value=str(level.rqs), inline=True)
 	return embed
+
+def formatEmbedsForPagination(inp: list, t: str, sb: str) -> list:
+	""" Converts a list of objects into a list of embeddable fields. """
+	# RETURNS: list<dict>
+	func = {
+		'level': peLevel
+	}
+	return [func[t](obj, sb) for obj in inp]
+
+def peLevel(level, sb: str) -> dict:
+	""" Converts a MMLevel into a Discord Embed Fields dict used for pagination. """
+	# RETURNS: dict (Fields)
+	lastRequest = DatetimeToRelative(UNIXToDatetime(level.lastrq))
+	timesRequested = str(level.timesrq)
+	timesSent = str(level.timessent)
+	sort_by = {
+		'recent': level.lastrq,
+		'times_rq': level.timesrq,
+		'times_sent': level.timessent
+	}
+	diffIcon = eRatingsToEmote(eGDDifficulty(diff=level.difficulty, dmn=level.demon))
+	d = {
+		'obj': level,
+		'sort': sort_by[sb],
+		'name': diffIcon + " " + level.name + " by " + level.author,
+		'value': 'Last Request: ' + lastRequest + " | Times Requested: " + timesRequested + " | Times Sent: " + timesSent
+	}
+	return d
 
 # PERMISSIONS
 def pDiscordAdmin(ctx: commands.Context) -> bool:
