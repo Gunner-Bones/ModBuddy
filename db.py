@@ -68,12 +68,13 @@ class MMUser:
 
 class MMRequestUser:
 
-	def __init__(self, rdID: int, rName: str, banned: bool, requestLast: int):
+	def __init__(self, rdID: int, rName: str, banned: bool, requestLast: int, requestList=[]):
 		""" Object for Requesting Users in Discord. """
 		self.id = rdID
 		self.name = rName
 		self.banned = banned
 		self.rqLast = requestLast
+		self.rqList = requestList
 
 
 class MMServerSettings:
@@ -110,7 +111,7 @@ class MMServerSettings:
 		if self.allowedRoles:
 			if not any(allowed in [role.id for role in ctx.author.roles] for allowed in self.allowedRoles):
 				return 4
-		if onCooldown(rq=rq):
+		if self.onCooldown(rq=rq):
 			return 5
 		return 0
 
@@ -222,11 +223,13 @@ class LevelDatabase:
 			-rName TEXT: User's Discord Name.
 			-banned INTEGER (bool): If the user is banned from requesting.
 			-requestLast INTEGER (UNIX timestamp): Most recent time user requested.
+			-requestList TEXT (list<int>): List of Levels requested.
 			*/
 			rdID INTEGER PRIMARY KEY, 
 			rName TEXT, 
 			banned INTEGER, 
 			requestLast INTEGER, 
+			requestList TEXT,
 			UNIQUE(rdID) 
 			)
 			""")
@@ -373,13 +376,32 @@ class LevelDatabase:
 			""",
 			(uid,))
 
-	def get_user(self, *args, **kwds) -> MMUser:
+	def get_user(self, **kwds) -> MMUser:
 		""" Returns MMUser object from Users table. """
 		# Allowed ARGS: uID (int), dID (int)
 		# RETURNS: MMUser
-		if 'uID' not in args and 'dID' not in args:
+		if 'uID' not in kwds.keys() and 'dID' not in kwds.keys():
 			return None
-		t = self.query_single_result("SELECT * FROM Users WHERE " + args[0] + " = ?", (kwds[args[0]],)) 
+		t = None
+		key = list(kwds.keys())[0]
+		kw = kwds[keykey]
+		if key == 'uID':
+			t = self.query_multiple_results(
+				"""
+				SELECT Users.uID, Users.dID, Users.uName, Users.uIsMod
+				FROM Users
+				WHERE uID = ?
+				""", (kw,)) 
+		elif key == 'dID':
+			t = self.query_multiple_results(
+				"""
+				SELECT Users.uID, Users.dID, Users.uName, Users.uIsMod
+				FROM Users
+				WHERE dID = ?
+				""", (kw,)) 
+		if not t:
+			return None
+		t = t[0]
 		return MMUser(uID=t[0], dID=t[1], uName=t[2], uIsMod=t[3])
 
 	def get_user_uid(self, did: int) -> int:
@@ -469,10 +491,10 @@ class LevelDatabase:
 		try:
 			self.db.execute(
 				"""
-				INSERT INTO RequestUsers(rdID, rName, banned, requestLast)
-				VALUES(?, ?, ?, ?)
+				INSERT INTO RequestUsers(rdID, rName, banned, requestLast, requestList)
+				VALUES(?, ?, ?, ?, ?)
 				""",
-				(mmru.id, mmru.name, mmru.banned, mmru.rqLast,))
+				(mmru.id, mmru.name, mmru.banned, mmru.rqLast, str(mmru.rqList)))
 			return True
 		except sqlite3.IntegrityError:
 			return False
@@ -497,20 +519,29 @@ class LevelDatabase:
 	def get_requester(self, rdid: int, rname="") -> MMRequestUser:
 		""" Returns MMRequestUser object from RequestUsers table, generates if doesn't exist. """
 		# RETURNS: MMRequestUser
-		t = self.query_single_result("SELECT * FROM RequestUsers WHERE rdID = ?", (rdid,))
+		t = self.query_multiple_results(
+			"""
+			SELECT RequestUsers.rdID, RequestUsers.rName, RequestUsers.banned,
+			RequestUsers.requestLast, RequestUsers.requestList
+			FROM RequestUsers
+			WHERE rdID = ?
+			""", (rdid,))
+		t = t[0]
 		if not t:
-			return new_requester(rdid=rdid, rname=rname)
-		return MMRequestUser(rdID=t[0], rName=r[1], banned=bool(r[2]), requestLast=r[3])
+			return self.new_requester(rdid=rdid, rname=rname)
+		return MMRequestUser(rdID=t[0], rName=t[1], banned=bool(t[2]), requestLast=t[3], 
+			requestList=StrToListInts(t[4]))
 
-	def update_requester(self, rdid: int, *args, **kwds) -> bool:
+	def update_requester(self, rdid: int, **kwds) -> bool:
 		""" Updates attributes of a Request User. """
 		# Allowed ARGS: banned (int), requestLast (int)
 		# RETURNS: bool (User updated successfully)
-		allowed = ['banned', 'requestLast']
-		if not any(a in args for a in allowed):
+		allowed = ['banned', 'requestLast', 'requestList']
+		if not any(a in list(kwds.keys()) for a in allowed):
 			return False
-		self.db.execute("UPDATE RequestUsers SET " + args[0] + " = " + kwds[args[0]] + " WHERE rdID = ?",
-			(rdid,))
+		key = list(kwds.keys())[0]
+		self.db.execute("UPDATE RequestUsers SET " + key + " = ? WHERE rdID = ?",
+			(kwds[key], rdid,))
 		return True
 
 	def ban_requester(self, rdid: int) -> bool:
@@ -523,10 +554,18 @@ class LevelDatabase:
 		# RETURNS: bool (User updated successfully)
 		return self.update_requester(rdid=rdid, banned=0)
 
-	def requester_rq(self, rdid: int) -> bool:
-		""" Updates a Request User's last time they requested to now. """
-		# RETURNS: bool (User updated successfully)
-		return self.update_requester(rdid=rdid, requestLast=int(time.time()))
+	def requester_rq(self, rdid: int, lid: int, rname: str) -> int:
+		""" Updates a Request User's new request. """
+		# RETURNS: int (0=Success, 1=Level already requested, 2=Not updated)
+		rqlast = self.update_requester(rdid=rdid, requestLast=int(time.time()))
+		levels_requested = self.get_requester(rdid=rdid, rname=rname).rqList
+		if lid in levels_requested:
+			return 1
+		levels_requested.append(lid)
+		rqlist = self.update_requester(rdid=rdid, requestList=str(levels_requested))
+		if rqlist and rqlast:
+			return 0
+		return 2
 
 	# SERVER SETTINGS
 	def add_server(self, mmss: MMServerSettings) -> bool:
@@ -574,7 +613,14 @@ class LevelDatabase:
 	def get_server(self, stid: int, stname="") -> MMServerSettings:
 		""" Returns the Server Settings from a given Discord Server ID. """
 		# RETURNS: MMServerSettings
-		t = self.query_single_result("SELECT * FROM ServerSettings WHERE stID = ?", (stid,))
+		t = self.query_multiple_results(
+			"""
+			SELECT ServerSettings.stID, ServerSettings.stName, ServerSettings.requests, 
+			ServerSettings.allowedChannels, ServerSettings.allowedRoles, ServerSettings.requestCooldown
+			FROM ServerSettings
+			WHERE stID = ?
+			""", (stid,))
+		t = t[0]
 		if not t:
 			return self.generate_default_server(stid=stid, stname=stname)
 		return MMServerSettings(stID=t[0], stName=t[1], requests=bool(t[2]), 

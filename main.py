@@ -1,5 +1,6 @@
 import gd
 import time
+import datetime
 import sys
 import os
 import json
@@ -111,6 +112,7 @@ async def request(ctx, reqlid):
 	""" Requests a Level. """
 	# SCOPE: Anyone
 	if reqlid.isdigit():
+		reqlid = int(reqlid)
 		requester = database.get_requester(rdid=ctx.author.id, rname=ctx.author.name)
 		server_settings = database.get_server(stid=ctx.guild.id, stname=ctx.guild.name)
 		crq = server_settings.canRequest(ctx=ctx, rq=requester)
@@ -122,16 +124,21 @@ async def request(ctx, reqlid):
 			5: "Woah, slow down! You can request again in "
 		}
 		if not crq:
-			level = database.new_level(lid=reqlid)
-			if level:
-				await response(ctx=ctx, react='SUCCESS', dynamic="Level REQUESTED!")
-				await ctx.send(embed=embedLevel(level))
+			rqr = database.requester_rq(rdid=ctx.author.id, lid=reqlid, rname=ctx.author.name)
+			if not rqr:
+				level = await database.new_level(lid=reqlid)
+				if level:
+					await response(ctx=ctx, react='SUCCESS', dynamic="Level REQUESTED!")
+					await ctx.send(embed=embedLevel(level))
+				else:
+					await response(ctx=ctx, react='FAILED', dynamic="No GD Level found with ID `" + str(reqlid) + "`") 
 			else:
-				await response(ctx=ctx, react='FAILED', dynamic="No GD Level found with ID `" + str(reqlid) + "`") 
+				await response(ctx=ctx, react='FAILED', dynamic="You've already requested this level!")
 		else:
 			extra = ""
 			if crq == 5:
-				extra = str(server_settings.onCooldown(rq=requester)) + " seconds."
+				xtt = datetime.timedelta(seconds=server_settings.onCooldown(rq=requester))
+				extra = "`" + DatetimeToRelative(dtt=xtt)[:-4] + "`"
 			await response(ctx=ctx, react='FAILED', dynamic=request_cases[crq] + extra)
 	else:
 		await response(ctx=ctx, react='FAILED', dynamic="`Level ID` parameter must be an ID!")
@@ -144,7 +151,7 @@ async def check_requests_new(ctx):
 	if await pLink(ctx=ctx, database=database):
 		all_levels = database.get_all_levels()
 		choice = await paginate(client=client, ctx=ctx, 
-			inp=all_levels, t='level', dsc=False, sb='recent')
+			inp=all_levels, t='level', dsc=True, sb='recent')
 		if choice:
 			level = database.get_level(lid=choice)
 			if level:

@@ -62,12 +62,12 @@ IMAGE_STATUS_NOT_RATED = "https://cdn.discordapp.com/attachments/795780617408479
 DUSERS_DBADMINS = [172861416364179456]
 
 DBPRELOAD_Users = [
-	{
-	'uID': 419346,
-	'dID': 172861416364179456 ,
-	'uName': 'GunnerBones',
-	'uIsMod': 0
-	},
+	#{
+	#'uID': 419346,
+	#'dID': 172861416364179456 ,
+	#'uName': 'GunnerBones',
+	#'uIsMod': 0
+	#},
 	{
 	'uID': 5151647,
 	'dID': 193140036311449600,
@@ -150,13 +150,19 @@ def UNIXToDatetime(unx: int) -> datetime.datetime:
 	# RETURNS: datetime.datetime
 	return datetime.datetime.fromtimestamp(unx)
 
-def DatetimeToRelative(dt: datetime.datetime) -> str:
+def DatetimeToRelative(dt=None, dtt=None) -> str:
 	""" Formats a datetime.datetime object to relative time. """
 	# RETURNS: str
 	# I'd like to give a standing ovation to the makers of the datetime
 	# library for having timedelta only include seconds and days :D
-	now = datetime.datetime.now()
-	dlt = now - dt
+	dlt = None
+	if dt:
+		now = datetime.datetime.now()
+		dlt = now - dt
+	elif dtt:
+		dlt = dtt
+	else:
+		return ""
 	s = "s ago"
 	if dlt.seconds < 60:
 		if dlt.seconds == 1:
@@ -356,7 +362,11 @@ async def paginate(client, ctx: commands.Context, inp: list, t: str, dsc: bool, 
 	page = 1
 	counter = 1
 	for obj in fields:
-		if counter == 6 or fields.index(obj) == len(fields) - 1:
+		num_emote = eNumberToEmote(counter)
+		temp_embed.add_field(name=num_emote + obj['name'], value=obj['value'], inline=False)
+		temp_objs.append(obj['obj'])
+		counter += 1
+		if counter == 6:
 			pagembed = {
 				'embed': temp_embed,
 				'page': page,
@@ -364,17 +374,18 @@ async def paginate(client, ctx: commands.Context, inp: list, t: str, dsc: bool, 
 				'objs': temp_objs
 			}
 			embeds.append(pagembed)
-			if fields.index(obj) == len(fields) - 1:
-				break
 			temp_embed = discord.Embed(title="Results")
 			temp_objs = []
 			counter = 1
 			page += 1
-		else:
-			num_emote = eNumberToEmote(counter)
-			temp_embed.add_field(name=num_emote + obj['name'], value=obj['value'], inline=False)
-			temp_objs.append(obj['obj'])
-			counter += 1
+	if temp_objs:
+		pagembed = {
+				'embed': temp_embed,
+				'page': page,
+				'items': counter - 1,
+				'objs': temp_objs
+			}
+		embeds.append(pagembed)
 	for embed in embeds:
 		embed['embed'].set_footer(text="Page " + str(embed['page']) + " of " + str(page))
 	embeds = sorted(embeds, key = lambda e: e['page'])
@@ -459,7 +470,7 @@ def formatEmbedsForPagination(inp: list, t: str, sb: str) -> list:
 def peLevel(level, sb: str) -> dict:
 	""" Converts a MMLevel into a Discord Embed Fields dict used for pagination. """
 	# RETURNS: dict (Fields)
-	lastRequest = DatetimeToRelative(UNIXToDatetime(level.lastrq))
+	lastRequest = DatetimeToRelative(dt=UNIXToDatetime(level.lastrq))
 	timesRequested = str(level.timesrq)
 	timesSent = str(level.timessent)
 	sort_by = {
